@@ -53,7 +53,7 @@ impl<K, V> Dominus<K, V> {
 }
 
 impl<K, V> Dominus<K, V> where 
-    K: Hash,
+    K: Hash + PartialEq,
 {
     pub fn insert(&mut self, key: K, value: V) {
         let mut h = DefaultHasher::new();
@@ -70,6 +70,11 @@ impl<K, V> Dominus<K, V> where
             let current_entry = &bucket.entries[entry_idx];
             match current_entry {
                 Some(e) => {
+                    if entry_to_insert.key == e.key {
+                        bucket.entries[entry_idx] = Some(entry_to_insert);
+                        break;
+                    }
+
                     if entry_to_insert.psl > e.psl {
                         entry_to_insert = std::mem::replace(&mut bucket.entries[entry_idx], Some(entry_to_insert)).unwrap();
                     } else {
