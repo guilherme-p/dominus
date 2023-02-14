@@ -54,7 +54,42 @@ impl<K, V> Dominus<K, V> {
 
 impl<K, V> Dominus<K, V> where 
     K: Hash + PartialEq,
+    V: Copy,
 {
+    pub fn get(&self, key: K) -> Option<V> {
+        let mut h = DefaultHasher::new();
+        key.hash(&mut h);
+
+        let hash = h.finish();
+        let bucket_idx: usize = usize::try_from(hash).unwrap() % self.num_buckets;
+        let bucket = &self.buckets[bucket_idx].read();
+
+        let mut entry_idx: usize = usize::try_from(hash).unwrap() % self.bucket_capacity;
+        let mut psl = 0;
+
+        loop {
+            let current_entry = &bucket.entries[entry_idx];
+            match current_entry {
+                Some(e) => {
+                    if e.key == key {
+                        return Some(e.value);
+                    }
+
+                    if e.psl >= psl {
+                        return None;
+                    }
+                }
+
+                None => {
+                    return None;
+                }
+            }
+
+            psl += 1;
+            entry_idx = (entry_idx + 1) % self.bucket_capacity;
+        }
+    }
+
     pub fn insert(&mut self, key: K, value: V) {
         let mut h = DefaultHasher::new();
         key.hash(&mut h);
@@ -94,6 +129,67 @@ impl<K, V> Dominus<K, V> where
         bucket.size += 1;
         self.size.fetch_add(1, Ordering::Relaxed);
     }
+
+    pub fn remove(&mut self, key: K) -> bool {
+        let mut h = DefaultHasher::new();
+        key.hash(&mut h);
+
+        let hash = h.finish();
+        let bucket_idx: usize = usize::try_from(hash).unwrap() % self.num_buckets;
+        let bucket = &mut self.buckets[bucket_idx].write();
+
+        let mut entry_idx: usize = usize::try_from(hash).unwrap() % self.bucket_capacity;
+        let mut current_entry = &bucket.entries[entry_idx];
+        let mut psl = 0;
+        
+
+        let mut found = false;
+
+        loop {
+            match current_entry {
+                Some(e) => {
+                    if e.key == key {
+                        found = true;
+                        break;
+                    }
+
+                    if e.psl >= psl {
+                        break;
+                    }
+                }
+
+                None => {
+                    break;
+                }
+            }
+
+            psl += 1;
+            entry_idx = (entry_idx + 1) % self.bucket_capacity;
+            current_entry = &bucket.entries[entry_idx];
+        }
+
+        if found {
+            bucket.entries[entry_idx] = None;
+
+            loop {
+                let prev_idx = entry_idx;
+                entry_idx = (entry_idx + 1) % self.bucket_capacity;
+                current_entry = &bucket.entries[entry_idx];
+
+                match current_entry {
+                    Some(e) => {
+                        bucket.entries.swap(prev_idx, entry_idx);
+                    }
+    
+                    None => {
+                        break;
+                    }
+                }
+            }
+        }
+
+        found
+    }
 }
     
     
@@ -119,15 +215,15 @@ impl<K, V> Entry<K, V> {
 }
     
     
-    pub fn add(left: usize, right: usize) -> usize {
-        left + right
-    }
+pub fn add(left: usize, right: usize) -> usize {
+    left + right
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
     
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        
-        #[test]
+    #[test]
     fn it_works() {
         let result = add(2, 2);
         assert_eq!(result, 4);
