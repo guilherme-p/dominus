@@ -1,4 +1,5 @@
 use parking_lot::RwLock;
+use std::error::Error;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::hash_map::DefaultHasher;
@@ -6,9 +7,10 @@ use std::hash::{Hash, Hasher};
 
 pub struct Dominus<K, V> {
     buckets: Vec<RwLock<Bucket<K, V>>>,
-    size: Arc<AtomicUsize>,
+    size: AtomicUsize,
     num_buckets: usize,
     bucket_capacity: usize,
+    max_bucket_load_factor: f64,
 }
 
 struct Bucket<K, V> {
@@ -26,7 +28,7 @@ struct Entry<K, V> {
 
 
 impl<K, V> Dominus<K, V> {
-    pub fn new(num_buckets: usize, bucket_capacity: usize) -> Self {
+    pub fn new(num_buckets: usize, bucket_capacity: usize, max_bucket_load_factor: f64) -> Self {
         /* let mut empty_entries = Vec::new();
         empty_entries.resize_with(bucket_capacity, || Option::<Entry<K, V>>::None); */
         
@@ -41,14 +43,15 @@ impl<K, V> Dominus<K, V> {
             
             Self {
                 buckets,
-                size: Arc::new(AtomicUsize::new(0)),
+                size: AtomicUsize::new(0),
                 num_buckets,
                 bucket_capacity,
+                max_bucket_load_factor,
             }
     }
 
-    pub fn get_load_capacity(&self) -> f32 {
-        self.size.load(Ordering::Relaxed) as f32 / ((self.num_buckets * self.bucket_capacity) as f32)
+    pub fn size(&self) -> usize {
+        self.size.load(Ordering::Relaxed)
     }
 }
 
@@ -90,7 +93,8 @@ impl<K, V> Dominus<K, V> where
         }
     }
 
-    pub fn insert(&mut self, key: K, value: V) {
+    // Return true if key already in table
+    pub fn insert(&mut self, key: K, value: V) -> Result<bool, Box<dyn Error>> {
         let mut h = DefaultHasher::new();
         key.hash(&mut h);
 
@@ -98,8 +102,13 @@ impl<K, V> Dominus<K, V> where
         let bucket_idx: usize = usize::try_from(hash).unwrap() % self.num_buckets;
         let bucket = &mut self.buckets[bucket_idx].write();
 
+        if bucket.load_factor() >= self.max_bucket_load_factor {
+            return Err("Bucket is full (max load factor exceeded)".into());
+        }
+
         let mut entry_idx: usize = usize::try_from(hash).unwrap() % self.bucket_capacity;
         let mut entry_to_insert = Entry::new(hash, key, value, 0);
+        let mut found = false;
 
         loop {
             let current_entry = &bucket.entries[entry_idx];
@@ -107,6 +116,7 @@ impl<K, V> Dominus<K, V> where
                 Some(e) => {
                     if entry_to_insert.key == e.key {
                         bucket.entries[entry_idx] = Some(entry_to_insert);
+                        found = true;
                         break;
                     }
 
@@ -128,6 +138,8 @@ impl<K, V> Dominus<K, V> where
 
         bucket.size += 1;
         self.size.fetch_add(1, Ordering::Relaxed);
+
+        Ok(found)
     }
 
     pub fn remove(&mut self, key: K) -> bool {
@@ -174,10 +186,11 @@ impl<K, V> Dominus<K, V> where
             loop {
                 let prev_idx = entry_idx;
                 entry_idx = (entry_idx + 1) % self.bucket_capacity;
-                current_entry = &bucket.entries[entry_idx];
+                let current_entry = &mut bucket.entries[entry_idx];
 
                 match current_entry {
                     Some(e) => {
+                        e.psl -= 1;
                         bucket.entries.swap(prev_idx, entry_idx);
                     }
     
@@ -200,6 +213,10 @@ impl<K, V> Bucket<K, V> {
             size: 0,
             capacity,
         }
+    }
+
+    fn load_factor(&self) -> f64 {
+        (self.size as f64) / (self.capacity as f64)
     }
 }
 
