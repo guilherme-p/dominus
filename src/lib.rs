@@ -29,15 +29,12 @@ struct Entry<K, V> {
 
 impl<K, V> Dominus<K, V> {
     pub fn new(num_buckets: usize, bucket_capacity: usize, max_bucket_load_factor: f64) -> Self {
-        /* let mut empty_entries = Vec::new();
-        empty_entries.resize_with(bucket_capacity, || Option::<Entry<K, V>>::None); */
-        
         let mut buckets = Vec::new();
         buckets.resize_with(
             num_buckets, 
             || RwLock::new(
                 Bucket::new(
-                    std::iter::repeat_with(|| Option::<Entry<K, V>>::None).take(bucket_capacity).collect::<Vec<Option<Entry<K, V>>>>(), // Using repeat_with so we don't need a Clone trait bound
+                    std::iter::repeat_with(|| Option::<Entry<K, V>>::None).take(bucket_capacity).collect::<Vec<Option<Entry<K, V>>>>(), // Using repeat_with so we don't need a Copy trait bound
                             bucket_capacity))
         );
             
@@ -181,7 +178,7 @@ impl<K, V> Dominus<K, V> where
         }
 
         if found {
-            bucket.entries[entry_idx] = None;
+            bucket.entries[entry_idx].take();
 
             loop {
                 let prev_idx = entry_idx;
