@@ -177,16 +177,19 @@ impl<K, V> Dominus<K, V> where
             loop {
                 entry_idx = (entry_idx + 1) % self.capacity;
 
-                let mut next_entry = self.entries[entry_idx].write();
+                let next_entry_r = self.entries[entry_idx].read();
 
-                if let Some(e) = (*next_entry).as_mut() {
+                if next_entry_r.is_some() {
+                    let mut next_entry = self.entries[entry_idx].write();
+                    let mut e = (*next_entry).as_mut().unwrap();
                     e.psl -= 1;
+
                     *prev_entry = next_entry.take();
+                    prev_entry = next_entry;
                 } else {
                     break;
                 }
 
-                prev_entry = next_entry;
             }
             
             self.size.fetch_sub(1, Ordering::Relaxed);
@@ -217,9 +220,10 @@ mod tests {
     use test::Bencher;
     
     #[bench]
-    unsafe fn bench_90_10(b: &mut Bencher) {
+    unsafe fn bench_70_30(b: &mut Bencher) {
         use std::thread::available_parallelism;
         use rand::Rng;
+        use rand::seq::SliceRandom;
 
         let n_threads_approx = available_parallelism().unwrap().get();
         let mut rng = rand::thread_rng();
@@ -231,18 +235,34 @@ mod tests {
             let mut handles = Vec::new();
 
             for t in 0..=n_threads_approx {
-                let handle = thread::spawn(|| {
-                    let local = Arc::clone(&table);
-                    let mut local_rng = rand::thread_rng();
-                    for op in 0..total_ops / n_threads_approx {
-                        if local_rng.gen::<f64>() < 0.1 {
-                            let (k, v) = (local_rng.gen(), local_rng.gen());
-                            (*local).insert(k, v);
+                let local = Arc::clone(&table);
+
+                let handle = 
+                    thread::spawn(move || {
+                        let mut local_rng = rand::thread_rng();
+                        let mut entries: Vec<(i32, i32)> = Vec::new();
+
+                        for op in 0..total_ops / n_threads_approx {
+                            if local_rng.gen::<f64>() < 0.3 {
+                                let (k, v) = (local_rng.gen(), local_rng.gen());
+                                local.insert(k, v);
+                                entries.push((k, v));
+                            } else {
+                                let o = entries.choose(&mut local_rng);
+                                if o.is_some() {
+                                    let (k, _) = o.unwrap();
+                                    local.get(*k);
+                                }
+                            }
                         }
                     }
-                });
+                );
 
                 handles.push(handle);
+            }
+
+            for h in handles.into_iter() {
+                h.join().unwrap();
             }
         });
     }
