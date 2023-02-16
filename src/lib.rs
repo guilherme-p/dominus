@@ -220,7 +220,7 @@ mod tests {
     use test::Bencher;
     
     #[bench]
-    unsafe fn bench_70_30(b: &mut Bencher) {
+    fn bench_70_30(b: &mut Bencher) {
         use std::thread::available_parallelism;
         use rand::Rng;
         use rand::seq::SliceRandom;
