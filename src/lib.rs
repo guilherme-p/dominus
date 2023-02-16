@@ -1,22 +1,18 @@
+#![feature(test)]
+
 use parking_lot::RwLock;
 use std::error::Error;
+use std::ops::DerefMut;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 pub struct Dominus<K, V> {
-    buckets: Vec<RwLock<Bucket<K, V>>>,
+    entries: Vec<RwLock<Option<Entry<K, V>>>>,
     size: AtomicUsize,
-    num_buckets: usize,
-    bucket_capacity: usize,
-    max_bucket_load_factor: f64,
-}
-
-struct Bucket<K, V> {
-    entries: Vec<Option<Entry<K, V>>>,
-    size: usize,
     capacity: usize,
+    max_load_factor: f64,
 }
 
 struct Entry<K, V> {
@@ -28,27 +24,27 @@ struct Entry<K, V> {
 
 
 impl<K, V> Dominus<K, V> {
-    pub fn new(num_buckets: usize, bucket_capacity: usize, max_bucket_load_factor: f64) -> Self {
-        let mut buckets = Vec::new();
-        buckets.resize_with(
-            num_buckets, 
-            || RwLock::new(
-                Bucket::new(
-                    std::iter::repeat_with(|| Option::<Entry<K, V>>::None).take(bucket_capacity).collect::<Vec<Option<Entry<K, V>>>>(), // Using repeat_with so we don't need a Copy trait bound
-                            bucket_capacity))
+    pub fn new(capacity: usize, max_load_factor: f64) -> Self {
+        let mut entries = Vec::new();
+        entries.resize_with(
+            capacity, 
+            || RwLock::new(Option::<Entry<K, V>>::None)
         );
             
             Self {
-                buckets,
+                entries,
                 size: AtomicUsize::new(0),
-                num_buckets,
-                bucket_capacity,
-                max_bucket_load_factor,
+                capacity,
+                max_load_factor,
             }
     }
 
     pub fn size(&self) -> usize {
         self.size.load(Ordering::Relaxed)
+    }
+
+    fn load_factor(&self) -> f64 {
+        (self.size() as f64) / (self.capacity as f64)
     }
 }
 
@@ -61,15 +57,13 @@ impl<K, V> Dominus<K, V> where
         key.hash(&mut h);
 
         let hash = h.finish();
-        let bucket_idx: usize = usize::try_from(hash).unwrap() % self.num_buckets;
-        let bucket = &self.buckets[bucket_idx].read();
 
-        let mut entry_idx: usize = usize::try_from(hash).unwrap() % self.bucket_capacity;
+        let mut entry_idx: usize = usize::try_from(hash).unwrap() % self.capacity;
         let mut psl = 0;
 
         loop {
-            let current_entry = &bucket.entries[entry_idx];
-            match current_entry {
+            let current_entry = self.entries[entry_idx].read();
+            match (*current_entry).as_ref() {
                 Some(e) => {
                     if e.key == key {
                         return Some(e.value);
@@ -86,76 +80,75 @@ impl<K, V> Dominus<K, V> where
             }
 
             psl += 1;
-            entry_idx = (entry_idx + 1) % self.bucket_capacity;
+            entry_idx = (entry_idx + 1) % self.capacity;
         }
     }
 
     // Return true if key already in table
-    pub fn insert(&mut self, key: K, value: V) -> Result<bool, Box<dyn Error>> {
+    pub fn insert(&self, key: K, value: V) -> Result<bool, Box<dyn Error>> {
         let mut h = DefaultHasher::new();
         key.hash(&mut h);
 
         let hash = h.finish();
-        let bucket_idx: usize = usize::try_from(hash).unwrap() % self.num_buckets;
-        let bucket = &mut self.buckets[bucket_idx].write();
 
-        if bucket.load_factor() >= self.max_bucket_load_factor {
-            return Err("Bucket is full (max load factor exceeded)".into());
+        if self.load_factor() >= self.max_load_factor {
+            return Err("Table is full (max load factor exceeded)".into());
         }
 
-        let mut entry_idx: usize = usize::try_from(hash).unwrap() % self.bucket_capacity;
+        let mut entry_idx: usize = usize::try_from(hash).unwrap() % self.capacity;
         let mut entry_to_insert = Entry::new(hash, key, value, 0);
         let mut found = false;
 
         loop {
-            let current_entry = &bucket.entries[entry_idx];
-            match current_entry {
+            let current_entry = self.entries[entry_idx].read();
+            match (*current_entry).as_ref() {
                 Some(e) => {
                     if entry_to_insert.key == e.key {
-                        bucket.entries[entry_idx] = Some(entry_to_insert);
+                        let mut w = self.entries[entry_idx].write();
+                        *w = Some(entry_to_insert);
+
                         found = true;
                         break;
                     }
 
                     if entry_to_insert.psl > e.psl {
-                        entry_to_insert = std::mem::replace(&mut bucket.entries[entry_idx], Some(entry_to_insert)).unwrap();
+                        let mut w = self.entries[entry_idx].write();
+                        entry_to_insert = std::mem::replace(w.deref_mut(), Some(entry_to_insert)).unwrap();
                     } else {
                         entry_to_insert.psl += 1;
                     }
                 }
 
                 None => {
-                    bucket.entries[entry_idx] = Some(entry_to_insert);
+                    let mut w = self.entries[entry_idx].write();
+                    *w = Some(entry_to_insert);
+
                     break;
                 }
             }
 
-            entry_idx = (entry_idx + 1) % self.bucket_capacity;
+            entry_idx = (entry_idx + 1) % self.capacity;
         }
 
-        bucket.size += 1;
         self.size.fetch_add(1, Ordering::Relaxed);
-
         Ok(found)
     }
 
-    pub fn remove(&mut self, key: K) -> bool {
+    pub fn remove(&self, key: K) -> bool {
         let mut h = DefaultHasher::new();
         key.hash(&mut h);
 
         let hash = h.finish();
-        let bucket_idx: usize = usize::try_from(hash).unwrap() % self.num_buckets;
-        let bucket = &mut self.buckets[bucket_idx].write();
 
-        let mut entry_idx: usize = usize::try_from(hash).unwrap() % self.bucket_capacity;
-        let mut current_entry = &bucket.entries[entry_idx];
+        let mut entry_idx: usize = usize::try_from(hash).unwrap() % self.capacity;
+        let mut current_entry = self.entries[entry_idx].read();
         let mut psl = 0;
         
 
         let mut found = false;
 
         loop {
-            match current_entry {
+            match (*current_entry).as_ref() {
                 Some(e) => {
                     if e.key == key {
                         found = true;
@@ -173,49 +166,36 @@ impl<K, V> Dominus<K, V> where
             }
 
             psl += 1;
-            entry_idx = (entry_idx + 1) % self.bucket_capacity;
-            current_entry = &bucket.entries[entry_idx];
+            entry_idx = (entry_idx + 1) % self.capacity;
+            current_entry = self.entries[entry_idx].read();
         }
 
         if found {
-            bucket.entries[entry_idx].take();
+            let mut prev_entry = self.entries[entry_idx].write();
+            prev_entry.take();
 
             loop {
-                let prev_idx = entry_idx;
-                entry_idx = (entry_idx + 1) % self.bucket_capacity;
-                let current_entry = &mut bucket.entries[entry_idx];
+                entry_idx = (entry_idx + 1) % self.capacity;
 
-                match current_entry {
-                    Some(e) => {
-                        e.psl -= 1;
-                        bucket.entries.swap(prev_idx, entry_idx);
-                    }
-    
-                    None => {
-                        break;
-                    }
+                let mut next_entry = self.entries[entry_idx].write();
+
+                if let Some(e) = (*next_entry).as_mut() {
+                    e.psl -= 1;
+                    *prev_entry = next_entry.take();
+                } else {
+                    break;
                 }
-            }
-        }
 
+                prev_entry = next_entry;
+            }
+            
+            self.size.fetch_sub(1, Ordering::Relaxed);
+        }
+        
         found
     }
 }
     
-    
-impl<K, V> Bucket<K, V> {
-    fn new(entries: Vec<Option<Entry<K, V>>>, capacity: usize) -> Self {
-        Self {
-            entries,
-            size: 0,
-            capacity,
-        }
-    }
-
-    fn load_factor(&self) -> f64 {
-        (self.size as f64) / (self.capacity as f64)
-    }
-}
 
 impl<K, V> Entry<K, V> {
     fn new(hash: u64, key: K, value: V, psl: usize,) -> Self {
@@ -227,19 +207,43 @@ impl<K, V> Entry<K, V> {
         }
     }
 }
-    
-    
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
-}
 
+extern crate test;
 #[cfg(test)]
 mod tests {
+    use std::thread;
+
     use super::*;
+    use test::Bencher;
     
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+    #[bench]
+    unsafe fn bench_90_10(b: &mut Bencher) {
+        use std::thread::available_parallelism;
+        use rand::Rng;
+
+        let n_threads_approx = available_parallelism().unwrap().get();
+        let mut rng = rand::thread_rng();
+        let total_ops = 5_000_000;
+
+        let mut table = Arc::new(Dominus::<i32, i32>::new(1_000_000, 0.8));
+
+        b.iter(|| {
+            let mut handles = Vec::new();
+
+            for t in 0..=n_threads_approx {
+                let handle = thread::spawn(|| {
+                    let local = Arc::clone(&table);
+                    let mut local_rng = rand::thread_rng();
+                    for op in 0..total_ops / n_threads_approx {
+                        if local_rng.gen::<f64>() < 0.1 {
+                            let (k, v) = (local_rng.gen(), local_rng.gen());
+                            (*local).insert(k, v);
+                        }
+                    }
+                });
+
+                handles.push(handle);
+            }
+        });
     }
 }
