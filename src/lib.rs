@@ -98,30 +98,42 @@ impl<K, V> Dominus<K, V> where
         let mut entry_idx: usize = usize::try_from(hash).unwrap() % self.capacity;
         let mut entry_to_insert = Entry::new(hash, key, value, 0);
         let mut found = false;
-
+        
         loop {
-            let current_entry = self.entries[entry_idx].read();
-            match (*current_entry).as_ref() {
+            let current_entry_r = self.entries[entry_idx].read();
+            match (*current_entry_r).as_ref() {
                 Some(e) => {
                     if entry_to_insert.key == e.key {
-                        let mut w = self.entries[entry_idx].write();
-                        *w = Some(entry_to_insert);
+                        let mut current_entry = {
+                            drop(current_entry_r);
+                            self.entries[entry_idx].write()
+                        };
+
+                        *current_entry = Some(entry_to_insert);
 
                         found = true;
                         break;
                     }
 
                     if entry_to_insert.psl > e.psl {
-                        let mut w = self.entries[entry_idx].write();
-                        entry_to_insert = std::mem::replace(w.deref_mut(), Some(entry_to_insert)).unwrap();
+                        let mut current_entry = {
+                            drop(current_entry_r);
+                            self.entries[entry_idx].write()
+                        };
+                        
+                        entry_to_insert = std::mem::replace(current_entry.deref_mut(), Some(entry_to_insert)).unwrap();
                     } else {
                         entry_to_insert.psl += 1;
                     }
                 }
 
                 None => {
-                    let mut w = self.entries[entry_idx].write();
-                    *w = Some(entry_to_insert);
+                    let mut current_entry = {
+                        drop(current_entry_r);
+                        self.entries[entry_idx].write()
+                    };
+
+                    *current_entry = Some(entry_to_insert);
 
                     break;
                 }
@@ -171,7 +183,11 @@ impl<K, V> Dominus<K, V> where
         }
 
         if found {
-            let mut prev_entry = self.entries[entry_idx].write();
+            let mut prev_entry = {
+                drop(current_entry);
+                self.entries[entry_idx].write()
+            };
+
             prev_entry.take();
 
             loop {
@@ -180,7 +196,11 @@ impl<K, V> Dominus<K, V> where
                 let next_entry_r = self.entries[entry_idx].read();
 
                 if next_entry_r.is_some() {
-                    let mut next_entry = self.entries[entry_idx].write();
+                    let mut next_entry = {
+                        drop(next_entry_r);
+                        self.entries[entry_idx].write()
+                    };
+
                     let mut e = (*next_entry).as_mut().unwrap();
                     e.psl -= 1;
 
@@ -215,55 +235,107 @@ extern crate test;
 #[cfg(test)]
 mod tests {
     use std::thread;
-
     use super::*;
-    use test::Bencher;
-    
-    #[bench]
-    fn bench_70_30(b: &mut Bencher) {
-        use std::thread::available_parallelism;
-        use rand::Rng;
-        use rand::seq::SliceRandom;
+    use rand::Rng;
+    use rand::seq::SliceRandom;
+    use rand::prelude::IteratorRandom;
+    use std::collections::HashSet;
 
-        let n_threads_approx = available_parallelism().unwrap().get();
+    #[test]
+    fn test_insert_get() {
         let mut rng = rand::thread_rng();
-        let total_ops = 5_000_000;
+
+        let total_ops = 500_000;
+        let mut table = Dominus::<i32, i32>::new(1_000_000, 0.8);
+        let mut entries: HashSet<(i32, i32)> = HashSet::new();
+
+        for op in 0..total_ops {
+            let (k, v) = (rng.gen(), rng.gen());
+            table.insert(k, v).unwrap();
+            entries.insert((k, v));
+        }
+
+        let mut entries = Vec::from_iter(entries);
+
+        for op in 0..total_ops {
+            let (i, o) = (&mut entries).into_iter().enumerate().choose(&mut rng).unwrap();
+            
+            let (k, v) = *o;
+            let got = table.get(k).unwrap();
+            assert_eq!(got, v);
+            
+            entries.remove(i);
+        }
+    }
+
+    #[test]
+    fn test_insert_remove() {
+        let mut rng = rand::thread_rng();
+
+        let total_ops = 500_000;
+        let mut table = Dominus::<i32, i32>::new(1_000_000, 0.8);
+        let mut entries: HashSet<(i32, i32)> = HashSet::new();
+
+        for op in 0..total_ops {
+            let (k, v) = (rng.gen(), rng.gen());
+            table.insert(k, v).unwrap();
+            entries.insert((k, v));
+        }
+
+        let mut entries = Vec::from_iter(entries);
+
+        for op in 0..total_ops {
+            let (i, o) = (&mut entries).into_iter().enumerate().choose(&mut rng).unwrap();
+            
+            let (k, v) = *o;
+            let removed = table.remove(k);
+            assert!(removed);
+            
+            entries.remove(i);
+        }
+    }
+    
+    #[test]
+    fn test_70_30() {
+        let n_threads_approx = thread::available_parallelism().unwrap().get();
+        let mut rng = rand::thread_rng();
+        let total_ops = 500_000;
 
         let mut table = Arc::new(Dominus::<i32, i32>::new(1_000_000, 0.8));
 
-        b.iter(|| {
-            let mut handles = Vec::new();
+        let mut handles = Vec::new();
 
-            for t in 0..=n_threads_approx {
-                let local = Arc::clone(&table);
+        for t in 0..=n_threads_approx {
+            let local = Arc::clone(&table);
 
-                let handle = 
-                    thread::spawn(move || {
-                        let mut local_rng = rand::thread_rng();
-                        let mut entries: Vec<(i32, i32)> = Vec::new();
+            let handle = 
+                thread::spawn(move || {
+                    let mut local_rng = rand::thread_rng();
+                    let mut entries: Vec<(i32, i32)> = Vec::new();
 
-                        for op in 0..total_ops / n_threads_approx {
-                            if local_rng.gen::<f64>() < 0.3 {
-                                let (k, v) = (local_rng.gen(), local_rng.gen());
-                                local.insert(k, v);
-                                entries.push((k, v));
+                    for op in 0..(total_ops / n_threads_approx) {
+                        if local_rng.gen::<f64>() < 0.3 {
+                            let (k, v) = (local_rng.gen(), local_rng.gen());
+                            local.insert(k, v).unwrap();
+                            entries.push((k, v));
+                        } else {
+                            let o = entries.choose(&mut local_rng);
+                            if o.is_some() {
+                                let (k, _) = o.unwrap();
+                                local.get(*k);
                             } else {
-                                let o = entries.choose(&mut local_rng);
-                                if o.is_some() {
-                                    let (k, _) = o.unwrap();
-                                    local.get(*k);
-                                }
+                                local.get(0);
                             }
                         }
                     }
-                );
+                }
+            );
 
-                handles.push(handle);
-            }
+            handles.push(handle);
+        }
 
-            for h in handles.into_iter() {
-                h.join().unwrap();
-            }
-        });
+        for h in handles.into_iter() {
+            h.join().unwrap();
+        }
     }
 }
