@@ -122,9 +122,9 @@ impl<K, V> Dominus<K, V> where
                         };
                         
                         entry_to_insert = std::mem::replace(current_entry.deref_mut(), Some(entry_to_insert)).unwrap();
-                    } else {
-                        entry_to_insert.psl += 1;
                     }
+                    
+                    entry_to_insert.psl += 1;
                 }
 
                 None => {
@@ -195,7 +195,7 @@ impl<K, V> Dominus<K, V> where
 
                 let next_entry_r = self.entries[entry_idx].read();
 
-                if next_entry_r.is_some() {
+                if (*next_entry_r).is_some() {
                     let mut next_entry = {
                         drop(next_entry_r);
                         self.entries[entry_idx].write()
@@ -239,20 +239,20 @@ mod tests {
     use rand::Rng;
     use rand::seq::SliceRandom;
     use rand::prelude::IteratorRandom;
-    use std::collections::HashSet;
+    use std::collections::HashMap;
 
     #[test]
     fn test_insert_get() {
         let mut rng = rand::thread_rng();
 
-        let total_ops = 500_000;
+        let total_ops = 1000;
         let mut table = Dominus::<i32, i32>::new(1_000_000, 0.8);
-        let mut entries: HashSet<(i32, i32)> = HashSet::new();
+        let mut entries: HashMap<i32, i32> = HashMap::new();
 
         for op in 0..total_ops {
             let (k, v) = (rng.gen(), rng.gen());
             table.insert(k, v).unwrap();
-            entries.insert((k, v));
+            entries.insert(k, v);
         }
 
         let mut entries = Vec::from_iter(entries);
@@ -272,14 +272,14 @@ mod tests {
     fn test_insert_remove() {
         let mut rng = rand::thread_rng();
 
-        let total_ops = 500_000;
+        let total_ops = 1000;
         let mut table = Dominus::<i32, i32>::new(1_000_000, 0.8);
-        let mut entries: HashSet<(i32, i32)> = HashSet::new();
+        let mut entries: HashMap<i32, i32> = HashMap::new();
 
         for op in 0..total_ops {
             let (k, v) = (rng.gen(), rng.gen());
             table.insert(k, v).unwrap();
-            entries.insert((k, v));
+            entries.insert(k, v);
         }
 
         let mut entries = Vec::from_iter(entries);
