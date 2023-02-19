@@ -271,6 +271,33 @@ mod tests {
     }
 
     #[test]
+    fn test_insert_load_factor() {
+        let mut rng = rand::thread_rng();
+
+        let total_ops = 80_000;
+        let mut table = Dominus::<i32, i32>::new(100_000, 0.8);
+        let mut entries: HashMap<i32, i32> = HashMap::new();
+
+        for _op in 0..total_ops {
+            let (mut k, v): (i32, i32) = (rng.gen(), rng.gen());
+            while entries.contains_key(&k) {
+                k = rng.gen();
+            }
+
+            table.insert(k, v).unwrap();
+            entries.insert(k, v);
+        }
+        
+        let (mut k, v): (i32, i32) = (rng.gen(), rng.gen());
+        while entries.contains_key(&k) {
+            k = rng.gen();
+        }
+
+        let res = table.insert(k, v);
+        assert!(res.is_err());
+    }
+
+    #[test]
     fn test_insert_remove() {
         let mut rng = rand::thread_rng();
 
@@ -297,7 +324,7 @@ mod tests {
         }
     }
     
-    /* #[test]
+    #[test]
     fn test_70_30() {
         let n_threads_approx = thread::available_parallelism().unwrap().get();
         let mut rng = rand::thread_rng();
@@ -320,14 +347,14 @@ mod tests {
                             let (k, v) = (local_rng.gen(), local_rng.gen());
                             local.insert(k, v).unwrap();
                             entries.push((k, v));
-                        } else {
+                        } 
+                        
+                        else if entries.len() > 0 {
                             let o = entries.choose(&mut local_rng);
-                            if o.is_some() {
-                                let (k, _) = o.unwrap();
-                                local.get(*k);
-                            } else {
-                                local.get(0);
-                            }
+                            let (k, _) = o.unwrap();
+                            let res = local.get(k);
+
+                            assert!(res.is_some());
                         }
                     }
                 }
@@ -339,5 +366,5 @@ mod tests {
         for h in handles.into_iter() {
             h.join().unwrap();
         }
-    } */
+    }
 }
