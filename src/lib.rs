@@ -2,6 +2,7 @@
 #![feature(let_chains)]
 
 use parking_lot::RwLock;
+use parking_lot::RwLockUpgradableReadGuard;
 use std::error::Error;
 use std::ops::DerefMut;
 use std::sync::Arc;
@@ -103,15 +104,12 @@ impl<K, V> Dominus<K, V> where
         let mut found = false;
         
         loop {
-            let current_entry_r = self.entries[entry_idx].read();
+            let current_entry_r = self.entries[entry_idx].upgradable_read();
+
             match (*current_entry_r).as_ref() {
                 Some(e) => {
                     if entry_to_insert.key == e.key {
-                        let mut current_entry = {
-                            drop(current_entry_r);
-                            self.entries[entry_idx].write()
-                        };
-
+                        let mut current_entry = RwLockUpgradableReadGuard::upgrade(current_entry_r);
                         *current_entry = Some(entry_to_insert);
 
                         found = true;
@@ -119,11 +117,7 @@ impl<K, V> Dominus<K, V> where
                     }
 
                     if entry_to_insert.psl > e.psl {
-                        let mut current_entry = {
-                            drop(current_entry_r);
-                            self.entries[entry_idx].write()
-                        };
-                        
+                        let mut current_entry = RwLockUpgradableReadGuard::upgrade(current_entry_r);
                         entry_to_insert = std::mem::replace(current_entry.deref_mut(), Some(entry_to_insert)).unwrap();
                     }
                     
@@ -131,12 +125,9 @@ impl<K, V> Dominus<K, V> where
                 }
 
                 None => {
-                    let mut current_entry = {
-                        drop(current_entry_r);
-                        self.entries[entry_idx].write()
-                    };
-
+                    let mut current_entry = RwLockUpgradableReadGuard::upgrade(current_entry_r);
                     *current_entry = Some(entry_to_insert);
+                    
                     self.size.fetch_add(1, Ordering::Relaxed);
                     break;
                 }
@@ -152,7 +143,7 @@ impl<K, V> Dominus<K, V> where
         let hash = self.get_hash(key);
 
         let mut entry_idx: usize = usize::try_from(hash).unwrap() % self.capacity;
-        let mut current_entry = self.entries[entry_idx].read();
+        let mut current_entry = self.entries[entry_idx].upgradable_read();
         let mut psl = 0;
         
 
@@ -178,29 +169,22 @@ impl<K, V> Dominus<K, V> where
 
             psl += 1;
             entry_idx = (entry_idx + 1) % self.capacity;
-            current_entry = self.entries[entry_idx].read();
+            current_entry = self.entries[entry_idx].upgradable_read();
         }
 
         if found {
-            let mut prev_entry = {
-                drop(current_entry);
-                self.entries[entry_idx].write()
-            };
-
+            let mut prev_entry = RwLockUpgradableReadGuard::upgrade(current_entry);
             prev_entry.take();
 
             loop {
                 entry_idx = (entry_idx + 1) % self.capacity;
 
-                let next_entry_r = self.entries[entry_idx].read();
+                let next_entry_r = self.entries[entry_idx].upgradable_read();
 
                 if let Some(e) = (*next_entry_r).as_ref()
                     && e.psl > 0
                 {
-                    let mut next_entry = {
-                        drop(next_entry_r);
-                        self.entries[entry_idx].write()
-                    };
+                    let mut next_entry = RwLockUpgradableReadGuard::upgrade(next_entry_r);
 
                     let mut e = (*next_entry).as_mut().unwrap();
                     e.psl -= 1;
