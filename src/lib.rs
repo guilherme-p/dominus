@@ -127,7 +127,7 @@ impl<K, V> Dominus<K, V> where
                 None => {
                     let mut current_entry = RwLockUpgradableReadGuard::upgrade(current_entry_r);
                     *current_entry = Some(entry_to_insert);
-                    
+
                     self.size.fetch_add(1, Ordering::Relaxed);
                     break;
                 }
@@ -178,7 +178,6 @@ impl<K, V> Dominus<K, V> where
 
             loop {
                 entry_idx = (entry_idx + 1) % self.capacity;
-
                 let next_entry_r = self.entries[entry_idx].upgradable_read();
 
                 if let Some(e) = (*next_entry_r).as_ref()
@@ -191,7 +190,9 @@ impl<K, V> Dominus<K, V> where
 
                     *prev_entry = next_entry.take();
                     prev_entry = next_entry;
-                } else {
+                } 
+                
+                else {
                     break;
                 }
 
