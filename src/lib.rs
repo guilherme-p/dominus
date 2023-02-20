@@ -137,7 +137,7 @@ impl<K, V> Dominus<K, V> where
                     };
 
                     *current_entry = Some(entry_to_insert);
-
+                    self.size.fetch_add(1, Ordering::Relaxed);
                     break;
                 }
             }
@@ -145,7 +145,6 @@ impl<K, V> Dominus<K, V> where
             entry_idx = (entry_idx + 1) % self.capacity;
         }
 
-        self.size.fetch_add(1, Ordering::Relaxed);
         Ok(found)
     }
 
@@ -355,6 +354,53 @@ mod tests {
                             let res = local.get(k);
 
                             assert!(res.is_some());
+                        }
+                    }
+                }
+            );
+
+            handles.push(handle);
+        }
+
+        for h in handles.into_iter() {
+            h.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_33_contention() {
+        let mut rng = rand::thread_rng();
+        let total_ops = 500_000;
+        let key_range = 1000;
+        
+        let mut table = Arc::new(Dominus::<i32, i32>::new(10_000, 0.8));
+        
+        let n_threads_approx = thread::available_parallelism().unwrap().get();
+        let mut handles = Vec::new();
+
+        for _t in 0..=n_threads_approx {
+            let local = Arc::clone(&table);
+
+            let handle = 
+                thread::spawn(move || {
+                    let mut local_rng = rand::thread_rng();
+
+                    for _op in 0..(total_ops / n_threads_approx) {
+                        let p = local_rng.gen::<f64>();
+
+                        if p < 0.33 {
+                            let (k, v): (i32, i32) = (local_rng.gen_range(0..key_range), local_rng.gen());
+                            local.insert(k, v).unwrap();
+                        } 
+                        
+                        else if p < 0.66 {
+                            let k = local_rng.gen_range(0..key_range);
+                            local.get(&k);
+                        }
+
+                        else {
+                            let k = local_rng.gen_range(0..key_range);
+                            local.remove(&k);
                         }
                     }
                 }
