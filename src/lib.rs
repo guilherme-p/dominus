@@ -5,9 +5,8 @@ use parking_lot::RwLock;
 use parking_lot::RwLockUpgradableReadGuard;
 use std::error::Error;
 use std::ops::DerefMut;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::collections::hash_map::DefaultHasher;
+use ahash::AHasher;
 use std::hash::{Hash, Hasher};
 
 pub struct Dominus<K, V> {
@@ -56,7 +55,7 @@ impl<K, V> Dominus<K, V> where
     V: Copy,
 {
     fn get_hash(&self, key: &K) -> u64 {
-        let mut h = DefaultHasher::new();
+        let mut h = AHasher::default();
         key.hash(&mut h);
     
         h.finish()
@@ -220,12 +219,13 @@ impl<K, V> Entry<K, V> {
 extern crate test;
 #[cfg(test)]
 mod tests {
-    use std::thread;
     use super::*;
+    use std::thread;
     use rand::Rng;
     use rand::seq::SliceRandom;
     use rand::prelude::IteratorRandom;
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     #[test]
     fn test_insert_get() {
