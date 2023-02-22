@@ -215,327 +215,326 @@ pub mod dominus {
             }
         }
     }
-}
 
-extern crate test;
-#[cfg(test)]
-mod tests {
-    use crate::dominus::*;
-    use std::thread;
-    use rand::Rng;
-    use rand::seq::SliceRandom;
-    use rand::prelude::IteratorRandom;
-    use std::collections::HashMap;
-    use std::sync::Arc;
 
-    #[test]
-    fn test_insert_get() {
-        let mut rng = rand::thread_rng();
+    extern crate test;
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::thread;
+        use rand::Rng;
+        use rand::seq::SliceRandom;
+        use rand::prelude::IteratorRandom;
+        use std::collections::HashMap;
+        use std::sync::Arc;
 
-        let total_ops = 50_000;
-        let table = Dominus::<i32, i32>::new(100_000, 0.8);
-        let mut entries: HashMap<i32, i32> = HashMap::new();
+        #[test]
+        fn test_insert_get() {
+            let mut rng = rand::thread_rng();
 
-        for _op in 0..total_ops {
-            let (k, v) = (rng.gen(), rng.gen());
-            table.insert(k, v).unwrap();
-            entries.insert(k, v);
+            let total_ops = 50_000;
+            let table = Dominus::<i32, i32>::new(100_000, 0.8);
+            let mut entries: HashMap<i32, i32> = HashMap::new();
+
+            for _op in 0..total_ops {
+                let (k, v) = (rng.gen(), rng.gen());
+                table.insert(k, v).unwrap();
+                entries.insert(k, v);
+            }
+
+            let mut entries = Vec::from_iter(entries);
+
+            for _e in 0..entries.len() {
+                let (i, o) = (&mut entries).into_iter().enumerate().choose(&mut rng).unwrap();
+                
+                let (k, v) = *o;
+                let got = table.get(&k).unwrap();
+                assert_eq!(got, v);
+                
+                entries.remove(i);
+            }
         }
 
-        let mut entries = Vec::from_iter(entries);
+        #[test]
+        fn test_insert_load_factor() {
+            let mut rng = rand::thread_rng();
 
-        for _e in 0..entries.len() {
-            let (i, o) = (&mut entries).into_iter().enumerate().choose(&mut rng).unwrap();
+            let total_ops = 80_000;
+            let table = Dominus::<i32, i32>::new(100_000, 0.8);
+            let mut entries: HashMap<i32, i32> = HashMap::new();
+
+            for _op in 0..total_ops {
+                let (mut k, v): (i32, i32) = (rng.gen(), rng.gen());
+                while entries.contains_key(&k) {
+                    k = rng.gen();
+                }
+
+                table.insert(k, v).unwrap();
+                entries.insert(k, v);
+            }
             
-            let (k, v) = *o;
-            let got = table.get(&k).unwrap();
-            assert_eq!(got, v);
-            
-            entries.remove(i);
-        }
-    }
-
-    #[test]
-    fn test_insert_load_factor() {
-        let mut rng = rand::thread_rng();
-
-        let total_ops = 80_000;
-        let table = Dominus::<i32, i32>::new(100_000, 0.8);
-        let mut entries: HashMap<i32, i32> = HashMap::new();
-
-        for _op in 0..total_ops {
             let (mut k, v): (i32, i32) = (rng.gen(), rng.gen());
             while entries.contains_key(&k) {
                 k = rng.gen();
             }
 
-            table.insert(k, v).unwrap();
-            entries.insert(k, v);
-        }
-        
-        let (mut k, v): (i32, i32) = (rng.gen(), rng.gen());
-        while entries.contains_key(&k) {
-            k = rng.gen();
+            let res = table.insert(k, v);
+            assert!(res.is_err());
         }
 
-        let res = table.insert(k, v);
-        assert!(res.is_err());
-    }
+        #[test]
+        fn test_insert_remove() {
+            let mut rng = rand::thread_rng();
 
-    #[test]
-    fn test_insert_remove() {
-        let mut rng = rand::thread_rng();
+            let total_ops = 50_000;
+            let table = Dominus::<i32, i32>::new(100_000, 0.8);
+            let mut entries: HashMap<i32, i32> = HashMap::new();
 
-        let total_ops = 50_000;
-        let table = Dominus::<i32, i32>::new(100_000, 0.8);
-        let mut entries: HashMap<i32, i32> = HashMap::new();
-
-        for _op in 0..total_ops {
-            let (k, v) = (rng.gen(), rng.gen());
-            table.insert(k, v).unwrap();
-            entries.insert(k, v);
-        }
-
-        let mut entries = Vec::from_iter(entries);
-
-        for _e in 0..entries.len() {
-            let (i, o) = (&mut entries).into_iter().enumerate().choose(&mut rng).unwrap();
-            
-            let (k, _v) = *o;
-            let removed = table.remove(&k);
-            assert!(removed);
-            
-            entries.remove(i);
-        }
-    }
-    
-    #[test]
-    fn test_70_get_30_insert_concurrent() {
-        let n_threads_approx = thread::available_parallelism().unwrap().get();
-        let total_ops = 500_000;
-
-        let table = Arc::new(Dominus::<i32, i32>::new(1_000_000, 0.8));
-
-        let mut handles = Vec::new();
-
-        for _t in 0..=n_threads_approx {
-            let local = Arc::clone(&table);
-
-            let handle = 
-                thread::spawn(move || {
-                    let mut local_rng = rand::thread_rng();
-                    let mut entries: Vec<(i32, i32)> = Vec::new();
-
-                    for _op in 0..(total_ops / n_threads_approx) {
-                        if local_rng.gen::<f64>() < 0.3 {
-                            let (k, v) = (local_rng.gen(), local_rng.gen());
-                            local.insert(k, v).unwrap();
-                            entries.push((k, v));
-                        } 
-                        
-                        else if entries.len() > 0 {
-                            let o = entries.choose(&mut local_rng);
-                            let (k, _) = o.unwrap();
-                            let res = local.get(k);
-
-                            assert!(res.is_some());
-                        }
-                    }
-                }
-            );
-
-            handles.push(handle);
-        }
-
-        for h in handles.into_iter() {
-            h.join().unwrap();
-        }
-    }
-
-    #[test]
-    fn test_33_contention() {
-        let total_ops = 500_000;
-        let key_range = 1000;
-        
-        let table = Arc::new(Dominus::<i32, i32>::new(10_000, 0.8));
-        
-        let n_threads_approx = thread::available_parallelism().unwrap().get();
-        let mut handles = Vec::new();
-
-        for _t in 0..=n_threads_approx {
-            let local = Arc::clone(&table);
-
-            let handle = 
-                thread::spawn(move || {
-                    let mut local_rng = rand::thread_rng();
-
-                    for _op in 0..(total_ops / n_threads_approx) {
-                        let p = local_rng.gen::<f64>();
-
-                        if p < 0.33 {
-                            let (k, v): (i32, i32) = (local_rng.gen_range(0..key_range), local_rng.gen());
-                            local.insert(k, v).unwrap();
-                        } 
-                        
-                        else if p < 0.66 {
-                            let k = local_rng.gen_range(0..key_range);
-                            local.get(&k);
-                        }
-
-                        else {
-                            let k = local_rng.gen_range(0..key_range);
-                            local.remove(&k);
-                        }
-                    }
-                }
-            );
-
-            handles.push(handle);
-        }
-
-        for h in handles.into_iter() {
-            h.join().unwrap();
-        }
-    }
-
-    use test::Bencher;
-
-    #[bench]
-    fn bench_1M_get(b: &mut Bencher) {
-        let mut rng = rand::thread_rng();
-
-        let total_ops = 1_000_000;
-        let key_range = 500_000;
-        let table = Dominus::<i32, i32>::new(1_000_000, 0.8);
-
-        for _op in 0..total_ops {
-            let (k, v) = (rng.gen_range(0..key_range), rng.gen());
-            table.insert(k, v).unwrap();
-        }
-
-        b.iter(|| {
             for _op in 0..total_ops {
-                let k = rng.gen_range(0..key_range);
-                table.get(&k);
+                let (k, v) = (rng.gen(), rng.gen());
+                table.insert(k, v).unwrap();
+                entries.insert(k, v);
             }
-        });
-    }
 
-    #[bench]
-    fn bench_1M_get_concurrent(b: &mut Bencher) {
-        let mut rng = rand::thread_rng();
-        let total_ops = 1_000_000;
-        let key_range = 500_000;
-        
-        let table = Arc::new(Dominus::<i32, i32>::new(1_000_000, 0.8));
-        
-        let n_threads_approx = thread::available_parallelism().unwrap().get();
-        
-        for _op in 0..total_ops {
-            let (k, v): (i32, i32) = (rng.gen_range(0..key_range), rng.gen());
-            table.insert(k, v).unwrap();
+            let mut entries = Vec::from_iter(entries);
+
+            for _e in 0..entries.len() {
+                let (i, o) = (&mut entries).into_iter().enumerate().choose(&mut rng).unwrap();
+                
+                let (k, v) = *o;
+                let removed = table.remove(&k);
+                assert!(removed);
+                
+                entries.remove(i);
+            }
         }
         
-        b.iter(|| {
+        #[test]
+        fn test_70_30() {
+            let n_threads_approx = thread::available_parallelism().unwrap().get();
+            let total_ops = 500_000;
+
+            let table = Arc::new(Dominus::<i32, i32>::new(1_000_000, 0.8));
+
+            let mut handles = Vec::new();
+
+            for t in 0..=n_threads_approx {
+                let local = Arc::clone(&table);
+
+                let handle = 
+                    thread::spawn(move || {
+                        let mut local_rng = rand::thread_rng();
+                        let mut entries: Vec<(i32, i32)> = Vec::new();
+
+                        for op in 0..(total_ops / n_threads_approx) {
+                            if local_rng.gen::<f64>() < 0.3 {
+                                let (k, v) = (local_rng.gen(), local_rng.gen());
+                                local.insert(k, v).unwrap();
+                                entries.push((k, v));
+                            } 
+                            
+                            else if entries.len() > 0 {
+                                let o = entries.choose(&mut local_rng);
+                                let (k, _) = o.unwrap();
+                                let res = local.get(k);
+
+                                assert!(res.is_some());
+                            }
+                        }
+                    }
+                );
+
+                handles.push(handle);
+            }
+
+            for h in handles.into_iter() {
+                h.join().unwrap();
+            }
+        }
+
+        #[test]
+        fn test_33_contention() {
+            let mut rng = rand::thread_rng();
+            let total_ops = 500_000;
+            let key_range = 1000;
+            
+            let table = Arc::new(Dominus::<i32, i32>::new(10_000, 0.8));
+            
+            let n_threads_approx = thread::available_parallelism().unwrap().get();
             let mut handles = Vec::new();
 
             for _t in 0..=n_threads_approx {
                 let local = Arc::clone(&table);
-    
+
                 let handle = 
                     thread::spawn(move || {
                         let mut local_rng = rand::thread_rng();
-    
+
                         for _op in 0..(total_ops / n_threads_approx) {
-                            let k = local_rng.gen_range(0..key_range);
-                            let _got = local.get(&k);
+                            let p = local_rng.gen::<f64>();
+
+                            if p < 0.33 {
+                                let (k, v): (i32, i32) = (local_rng.gen_range(0..key_range), local_rng.gen());
+                                local.insert(k, v).unwrap();
+                            } 
+                            
+                            else if p < 0.66 {
+                                let k = local_rng.gen_range(0..key_range);
+                                local.get(&k);
+                            }
+
+                            else {
+                                let k = local_rng.gen_range(0..key_range);
+                                local.remove(&k);
+                            }
                         }
                     }
                 );
-    
+
                 handles.push(handle);
             }
-            
+
             for h in handles.into_iter() {
                 h.join().unwrap();
             }
-        });
-    }
+        }
 
-    #[bench]
-    fn bench_1M_insert_concurrent(b: &mut Bencher) {
-        let total_ops = 1_000_000;
-        let key_range = 500_000;
-        
-        let table = Arc::new(Dominus::<i32, i32>::new(1_000_000, 0.8));
-        
-        let n_threads_approx = thread::available_parallelism().unwrap().get();
-        
-        b.iter(|| {
-            let mut handles = Vec::new();
+        use test::Bencher;
 
-            for _t in 0..=n_threads_approx {
-                let local = Arc::clone(&table);
-    
-                let handle = 
-                    thread::spawn(move || {
-                        let mut local_rng = rand::thread_rng();
-    
-                        for _op in 0..(total_ops / n_threads_approx) {
-                            let (k, v): (i32, i32) = (local_rng.gen_range(0..key_range), local_rng.gen());
-                            local.insert(k, v).unwrap();
+        #[bench]
+        fn bench_1M_get(b: &mut Bencher) {
+            let mut rng = rand::thread_rng();
+            let total_ops = 1_000_000;
+            let key_range = 500_000;
+            let table = Dominus::<i32, i32>::new(1_000_000, 0.8);
+
+            for _op in 0..total_ops {
+                let (k, v) = (rng.gen_range(0..key_range), rng.gen());
+                table.insert(k, v).unwrap();
+            }
+
+            b.iter(|| {
+                for _op in 0..total_ops {
+                    let k = rng.gen_range(0..key_range);
+                    table.get(&k);
+                }
+            });
+        }
+
+        #[bench]
+        fn bench_1M_get_concurrent(b: &mut Bencher) {
+            let mut rng = rand::thread_rng();
+            let total_ops = 1_000_000;
+            let key_range = 500_000;
+            
+            let table = Arc::new(Dominus::<i32, i32>::new(1_000_000, 0.8));
+            
+            let n_threads_approx = thread::available_parallelism().unwrap().get();
+            
+            for _op in 0..total_ops {
+                let (k, v): (i32, i32) = (rng.gen_range(0..key_range), rng.gen());
+                table.insert(k, v).unwrap();
+            }
+            
+            b.iter(|| {
+                let mut handles = Vec::new();
+
+                for _t in 0..=n_threads_approx {
+                    let local = Arc::clone(&table);
+        
+                    let handle = 
+                        thread::spawn(move || {
+                            let mut local_rng = rand::thread_rng();
+        
+                            for _op in 0..(total_ops / n_threads_approx) {
+                                let k = local_rng.gen_range(0..key_range);
+                                let _got = local.get(&k);
+                            }
                         }
-                    }
-                );
-    
-                handles.push(handle);
-            }
+                    );
+        
+                    handles.push(handle);
+                }
+                
+                for h in handles.into_iter() {
+                    h.join().unwrap();
+                }
+            });
+        }
+
+        #[bench]
+        fn bench_1M_insert_concurrent(b: &mut Bencher) {
+            let total_ops = 1_000_000;
+            let key_range = 500_000;
             
-            for h in handles.into_iter() {
-                h.join().unwrap();
-            }
-        });
-    }
+            let table = Arc::new(Dominus::<i32, i32>::new(1_000_000, 0.8));
+            
+            let n_threads_approx = thread::available_parallelism().unwrap().get();
+            
+            b.iter(|| {
+                let mut handles = Vec::new();
 
-    #[bench]
-    fn bench_1M_insert_mutex(b: &mut Bencher) {
-        use parking_lot::Mutex;
-
-        let total_ops = 100_000;
-        let key_range: i32 = 50_000;
-
-        let n_threads_approx = thread::available_parallelism().unwrap().get();
+                for _t in 0..=n_threads_approx {
+                    let local = Arc::clone(&table);
         
-        let table = Arc::new(Mutex::new(HashMap::<i32, i32>::with_capacity((key_range as usize) * 2)));
+                    let handle = 
+                        thread::spawn(move || {
+                            let mut local_rng = rand::thread_rng();
         
-        
-        b.iter(|| {
-            let mut handles = Vec::new();
-
-            for _t in 0..=n_threads_approx {
-                let local = Arc::clone(&table);
-    
-                let handle = 
-                    thread::spawn(move || {
-                        let mut local_rng = rand::thread_rng();
-    
-                        for _op in 0..(total_ops / n_threads_approx) {
-                            let (k, v): (i32, i32) = (local_rng.gen_range(0..key_range), local_rng.gen());
-                            let mut guard = local.lock();
-                            guard.insert(k, v);
+                            for _op in 0..(total_ops / n_threads_approx) {
+                                let (k, v): (i32, i32) = (local_rng.gen_range(0..key_range), local_rng.gen());
+                                local.insert(k, v).unwrap();
+                            }
                         }
-                    }
-                );
-    
-                handles.push(handle);
-            }
+                    );
+        
+                    handles.push(handle);
+                }
+                
+                for h in handles.into_iter() {
+                    h.join().unwrap();
+                }
+            });
+        }
+
+        #[bench]
+        fn bench_1M_insert_mutex(b: &mut Bencher) {
+            use parking_lot::Mutex;
+
+            let total_ops = 100_000;
+            let key_range: i32 = 50_000;
+
+            let n_threads_approx = thread::available_parallelism().unwrap().get();
             
-            for h in handles.into_iter() {
-                h.join().unwrap();
-            }
-        });
+            let table = Arc::new(Mutex::new(HashMap::<i32, i32>::with_capacity((key_range as usize) * 2)));
+            
+            
+            b.iter(|| {
+                let mut handles = Vec::new();
 
+                for _t in 0..=n_threads_approx {
+                    let local = Arc::clone(&table);
+        
+                    let handle = 
+                        thread::spawn(move || {
+                            let mut local_rng = rand::thread_rng();
+        
+                            for _op in 0..(total_ops / n_threads_approx) {
+                                let (k, v): (i32, i32) = (local_rng.gen_range(0..key_range), local_rng.gen());
+                                let mut guard = local.lock();
+                                guard.insert(k, v);
+                            }
+                        }
+                    );
+        
+                    handles.push(handle);
+                }
+                
+                for h in handles.into_iter() {
+                    h.join().unwrap();
+                }
+            });
+
+        }
     }
-
-    
 }
