@@ -358,7 +358,7 @@ pub mod dominus {
             let total_ops = 500_000;
             let key_range = 1000;
             
-            let table = Arc::new(Dominus::<i32, i32>::new(10_000, 0.8));
+            let table = Arc::new(Dominus::<i32, i32>::new((key_range as usize) * 2, 0.8));
             
             let n_threads_approx = thread::available_parallelism().unwrap().get();
             let mut handles = Vec::new();
@@ -406,7 +406,7 @@ pub mod dominus {
             let mut rng = rand::thread_rng();
             let total_ops = 1_000_000;
             let key_range = 500_000;
-            let table = Dominus::<i32, i32>::new(1_000_000, 0.8);
+            let table = Dominus::<i32, i32>::new((key_range as usize) * 2, 0.8);
 
             for _op in 0..total_ops {
                 let (k, v) = (rng.gen_range(0..key_range), rng.gen());
@@ -427,7 +427,7 @@ pub mod dominus {
             let total_ops = 1_000_000;
             let key_range = 500_000;
             
-            let table = Arc::new(Dominus::<i32, i32>::new(1_000_000, 0.8));
+            let table = Arc::new(Dominus::<i32, i32>::new((key_range as usize) * 2, 0.8));
             
             let n_threads_approx = thread::available_parallelism().unwrap().get();
             
@@ -467,7 +467,7 @@ pub mod dominus {
             let total_ops = 1_000_000;
             let key_range = 500_000;
             
-            let table = Arc::new(Dominus::<i32, i32>::new(1_000_000, 0.8));
+            let table = Arc::new(Dominus::<i32, i32>::new((key_range as usize) * 2, 0.8));
             
             let n_threads_approx = thread::available_parallelism().unwrap().get();
             
@@ -507,7 +507,6 @@ pub mod dominus {
             let n_threads_approx = thread::available_parallelism().unwrap().get();
             
             let table = Arc::new(Mutex::new(HashMap::<i32, i32>::with_capacity((key_range as usize) * 2)));
-            
             
             b.iter(|| {
                 let mut handles = Vec::new();
