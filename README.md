@@ -1,4 +1,4 @@
-I made this simple, concurrent Robin Hood hash table in order to practice Rust. It uses parking_lot's RwLock for each bucket, and ahash for faster hashing.
+I made this simple, concurrent Robin Hood hash table in order to practice Rust. It uses parking_lot's RwLock for each bucket, and ahash for faster hashing. I haven't implemented resizing.
 
 I also included some simple tests and benchmarks.
 
