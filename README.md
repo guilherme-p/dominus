@@ -1,5 +1,7 @@
 I made this simple, concurrent Robin Hood hash table in order to practice Rust. It uses parking_lot's RwLock for each bucket, and ahash for faster hashing.
 
+I also included some simple tests and benchmarks.
+
 ## Concurrency reasoning
 
 > **WARNING**: Reasoning about concurrency is very hard and error-prone, you should NOT trust any of this. I have NOT dedicated a lot of time to this project, and I'm FAR from an expert on this. This logic could be completely WRONG.
@@ -11,6 +13,16 @@ There is no data race on deletion due to the use of upgradeable reads (which are
 There is no data race on insertion for the same reason. If while inserting, a thread removes some node behind us, it will backward shift us into the correct position. If another thread tries to get the inserted key after the remove but before the backward shift has finalized, it will block because the backward shifting thread is holding exclusive locks in its path.
 
 If while inserting, a thread removes some node in front of us, the deleting thread is always holding exclusive locks to any nodes that may cause an inconsistent state/violate Robin Hood invariants.
+
+## Run tests
+```
+$ cargo test
+```
+
+## Run benchmarks
+```
+$ cargo bench
+```
 
 ## References:
 
