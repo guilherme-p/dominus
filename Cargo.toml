@@ -7,8 +7,14 @@ edition = "2021"
 
 [dependencies]
 ahash = "0.8.3"
+anyhow = "1.0.81"
+criterion = "0.5.1"
 parking_lot = "0.12.1"
 rand = "0.8.4"
+
+[[bench]]
+name = "bench"
+harness = false
 
 [profile.bench]
 opt-level = 0

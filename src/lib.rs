@@ -1,539 +1,211 @@
-#![feature(test)]
+// #![feature(test)]
 #![feature(let_chains)]
 
-pub mod dominus {
-    use parking_lot::RwLock;
-    use parking_lot::RwLockUpgradableReadGuard;
-    use std::error::Error;
-    use std::ops::DerefMut;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use ahash::AHasher;
-    use std::hash::{Hash, Hasher};
+use parking_lot::RwLock;
+use parking_lot::RwLockUpgradableReadGuard;
+use std::error::Error;
+use std::ops::DerefMut;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use ahash::AHasher;
+use std::hash::{Hash, Hasher};
+use anyhow::{Result, anyhow};
 
-    pub struct Dominus<K, V> {
-        entries: Vec<RwLock<Option<Entry<K, V>>>>,
-        size: AtomicUsize,
-        capacity: usize,
-        max_load_factor: f64,
-    }
+pub struct Dominus<K, V> {
+    entries: Vec<RwLock<Option<Entry<K, V>>>>,
+    size: AtomicUsize,
+    capacity: usize,
+    max_load_factor: f64,
+}
 
-    struct Entry<K, V> {
-        hash: u64,
-        key: K,
-        value: V,
-        psl: usize,
-    }
+struct Entry<K, V> {
+    hash: u64,
+    key: K,
+    value: V,
+    psl: usize,
+}
 
-    impl<K, V> Dominus<K, V> {
-        pub fn new(capacity: usize, max_load_factor: f64) -> Self {
-            let mut entries = Vec::new();
-            entries.resize_with(
-                capacity, 
-                || RwLock::new(Option::<Entry<K, V>>::None)
-            );
-                
-                Self {
-                    entries,
-                    size: AtomicUsize::new(0),
-                    capacity,
-                    max_load_factor,
-                }
-        }
-
-        pub fn size(&self) -> usize {
-            self.size.load(Ordering::Relaxed)
-        }
-
-        fn load_factor(&self) -> f64 {
-            (self.size() as f64) / (self.capacity as f64)
-        }
-
-    }
-
-    impl<K, V> Dominus<K, V> where 
-        K: Hash + PartialEq,
-        V: Copy,
-    {
-        fn get_hash(&self, key: &K) -> u64 {
-            let mut h = AHasher::default();
-            key.hash(&mut h);
-        
-            h.finish()
-        }
-
-        pub fn get(&self, key: &K) -> Option<V> {
-            let hash = self.get_hash(key);
-
-            let mut entry_idx: usize = usize::try_from(hash).unwrap() % self.capacity;
-            let mut psl = 0;
-
-            loop {
-                let current_entry = self.entries[entry_idx].read();
-                match (*current_entry).as_ref() {
-                    Some(e) => {
-                        if e.key == *key {
-                            return Some(e.value);
-                        }
-
-                        if e.psl < psl {
-                            return None;
-                        }
-                    }
-
-                    None => {
-                        return None;
-                    }
-                }
-
-                psl += 1;
-                entry_idx = (entry_idx + 1) % self.capacity;
-            }
-        }
-
-        // Return true if key already in table
-        pub fn insert(&self, key: K, value: V) -> Result<bool, Box<dyn Error>> {
-            let hash = self.get_hash(&key);
-
-            if self.load_factor() >= self.max_load_factor {
-                return Err("Table is full (max load factor exceeded)".into());
-            }
-
-            let mut entry_idx: usize = usize::try_from(hash).unwrap() % self.capacity;
-            let mut entry_to_insert = Entry::new(hash, key, value, 0);
-            let mut found = false;
+impl<K, V> Dominus<K, V> {
+    pub fn new(capacity: usize, max_load_factor: f64) -> Self {
+        let mut entries = Vec::new();
+        entries.resize_with(
+            capacity, 
+            || RwLock::new(Option::<Entry<K, V>>::None)
+        );
             
-            loop {
-                let current_entry_r = self.entries[entry_idx].upgradable_read();
+            Self {
+                entries,
+                size: AtomicUsize::new(0),
+                capacity,
+                max_load_factor,
+            }
+    }
 
-                match (*current_entry_r).as_ref() {
-                    Some(e) => {
-                        if entry_to_insert.key == e.key {
-                            let mut current_entry = RwLockUpgradableReadGuard::upgrade(current_entry_r);
-                            *current_entry = Some(entry_to_insert);
+    pub fn size(&self) -> usize {
+        self.size.load(Ordering::Relaxed)
+    }
 
-                            found = true;
-                            break;
-                        }
+    fn load_factor(&self) -> f64 {
+        (self.size() as f64) / (self.capacity as f64)
+    }
 
-                        if entry_to_insert.psl > e.psl {
-                            let mut current_entry = RwLockUpgradableReadGuard::upgrade(current_entry_r);
-                            entry_to_insert = std::mem::replace(current_entry.deref_mut(), Some(entry_to_insert)).unwrap();
-                        }
-                        
-                        entry_to_insert.psl += 1;
+}
+
+impl<K, V> Dominus<K, V> where 
+    K: Hash + PartialEq,
+    V: Copy,
+{
+    fn get_hash(&self, key: &K) -> u64 {
+        let mut h = AHasher::default();
+        key.hash(&mut h);
+    
+        h.finish()
+    }
+
+    pub fn get(&self, key: &K) -> Result<Option<V>> {
+        let hash = self.get_hash(key);
+
+        let mut entry_idx: usize = usize::try_from(hash)? % self.capacity;
+        let mut psl = 0;
+
+        loop {
+            let current_entry = self.entries[entry_idx].read();
+            match current_entry.as_ref() {
+                Some(e) => {
+                    if e.key == *key {
+                        return Ok(Some(e.value));
                     }
 
-                    None => {
+                    if e.psl < psl {
+                        return Ok(None);
+                    }
+                }
+
+                None => {
+                    return Ok(None);
+                }
+            }
+
+            psl += 1;
+            entry_idx = (entry_idx + 1) % self.capacity;
+        }
+    }
+
+    // Return true if key already in table
+    pub fn insert(&self, key: K, value: V) -> Result<bool> {
+        let hash = self.get_hash(&key);
+
+        if self.load_factor() >= self.max_load_factor {
+            return Err(anyhow!("Table is full (max load factor exceeded)"));
+        }
+
+        let mut entry_idx: usize = usize::try_from(hash)? % self.capacity;
+        let mut entry_to_insert = Entry::new(hash, key, value, 0);
+        let mut found = false;
+        
+        loop {
+            let current_entry_r = self.entries[entry_idx].upgradable_read();
+
+            match current_entry_r.as_ref() {
+                Some(e) => {
+                    if entry_to_insert.key == e.key {
                         let mut current_entry = RwLockUpgradableReadGuard::upgrade(current_entry_r);
                         *current_entry = Some(entry_to_insert);
 
-                        self.size.fetch_add(1, Ordering::Relaxed);
+                        found = true;
                         break;
                     }
+
+                    if entry_to_insert.psl > e.psl {
+                        let mut current_entry = RwLockUpgradableReadGuard::upgrade(current_entry_r);
+                        entry_to_insert = std::mem::replace(current_entry.deref_mut(), Some(entry_to_insert)).unwrap();
+                    }
+                    
+                    entry_to_insert.psl += 1;
                 }
 
-                entry_idx = (entry_idx + 1) % self.capacity;
+                None => {
+                    let mut current_entry = RwLockUpgradableReadGuard::upgrade(current_entry_r);
+                    *current_entry = Some(entry_to_insert);
+
+                    self.size.fetch_add(1, Ordering::Relaxed);
+                    break;
+                }
             }
 
-            Ok(found)
+            entry_idx = (entry_idx + 1) % self.capacity;
         }
 
-        pub fn remove(&self, key: &K) -> bool {
-            let hash = self.get_hash(key);
+        Ok(found)
+    }
 
-            let mut entry_idx: usize = usize::try_from(hash).unwrap() % self.capacity;
-            let mut current_entry = self.entries[entry_idx].upgradable_read();
-            let mut psl = 0;
-            
+    pub fn remove(&self, key: &K) -> Result<Option<V>> {
+        let hash = self.get_hash(key);
 
-            let mut found = false;
+        let mut entry_idx: usize = usize::try_from(hash)? % self.capacity;
+        let mut current_entry = self.entries[entry_idx].upgradable_read();
+        let mut psl = 0;
+        
+
+        let mut found = false;
+        let mut old_value = None;
+
+        while let Some(e) = current_entry.as_ref() {
+            if e.key == *key {
+                found = true;
+                old_value = Some(e.value);
+                break;
+            }
+
+            if e.psl < psl {
+                break;
+            }
+
+            psl += 1;
+            entry_idx = (entry_idx + 1) % self.capacity;
+            current_entry = self.entries[entry_idx].upgradable_read();
+        }
+
+        if found {
+            let mut prev_entry = RwLockUpgradableReadGuard::upgrade(current_entry);
+            prev_entry.take();
 
             loop {
-                match (*current_entry).as_ref() {
-                    Some(e) => {
-                        if e.key == *key {
-                            found = true;
-                            break;
-                        }
-
-                        if e.psl < psl {
-                            break;
-                        }
-                    }
-
-                    None => {
-                        break;
-                    }
-                }
-
-                psl += 1;
                 entry_idx = (entry_idx + 1) % self.capacity;
-                current_entry = self.entries[entry_idx].upgradable_read();
-            }
+                let next_entry_r = self.entries[entry_idx].upgradable_read();
 
-            if found {
-                let mut prev_entry = RwLockUpgradableReadGuard::upgrade(current_entry);
-                prev_entry.take();
+                if let Some(e) = next_entry_r.as_ref()
+                    && e.psl > 0
+                {
+                    let mut next_entry = RwLockUpgradableReadGuard::upgrade(next_entry_r);
 
-                loop {
-                    entry_idx = (entry_idx + 1) % self.capacity;
-                    let next_entry_r = self.entries[entry_idx].upgradable_read();
+                    let e = next_entry.as_mut().unwrap();
+                    e.psl -= 1;
 
-                    if let Some(e) = (*next_entry_r).as_ref()
-                        && e.psl > 0
-                    {
-                        let mut next_entry = RwLockUpgradableReadGuard::upgrade(next_entry_r);
-
-                        let mut e = (*next_entry).as_mut().unwrap();
-                        e.psl -= 1;
-
-                        *prev_entry = next_entry.take();
-                        prev_entry = next_entry;
-                    } 
-                    
-                    else {
-                        break;
-                    }
-
-                }
+                    *prev_entry = next_entry.take();
+                    prev_entry = next_entry;
+                } 
                 
-                self.size.fetch_sub(1, Ordering::Relaxed);
+                else {
+                    break;
+                }
+
             }
             
-            found
+            self.size.fetch_sub(1, Ordering::Relaxed);
         }
+        
+        Ok(old_value)
     }
-        
+}
+    
 
-    impl<K, V> Entry<K, V> {
-        fn new(hash: u64, key: K, value: V, psl: usize) -> Self {
-            Entry {
-                hash,
-                key,
-                value,
-                psl
-            }
-        }
-    }
-
-
-    extern crate test;
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use std::thread;
-        use rand::Rng;
-        use rand::seq::SliceRandom;
-        use rand::prelude::IteratorRandom;
-        use std::collections::HashMap;
-        use std::sync::Arc;
-
-        #[test]
-        fn test_insert_get() {
-            let mut rng = rand::thread_rng();
-
-            let total_ops = 50_000;
-            let table = Dominus::<i32, i32>::new(100_000, 0.8);
-            let mut entries: HashMap<i32, i32> = HashMap::new();
-
-            for _op in 0..total_ops {
-                let (k, v) = (rng.gen(), rng.gen());
-                table.insert(k, v).unwrap();
-                entries.insert(k, v);
-            }
-
-            let mut entries = Vec::from_iter(entries);
-
-            for _e in 0..entries.len() {
-                let (i, o) = (&mut entries).into_iter().enumerate().choose(&mut rng).unwrap();
-                
-                let (k, v) = *o;
-                let got = table.get(&k).unwrap();
-                assert_eq!(got, v);
-                
-                entries.remove(i);
-            }
-        }
-
-        #[test]
-        fn test_insert_load_factor() {
-            let mut rng = rand::thread_rng();
-
-            let total_ops = 80_000;
-            let table = Dominus::<i32, i32>::new(100_000, 0.8);
-            let mut entries: HashMap<i32, i32> = HashMap::new();
-
-            for _op in 0..total_ops {
-                let (mut k, v): (i32, i32) = (rng.gen(), rng.gen());
-                while entries.contains_key(&k) {
-                    k = rng.gen();
-                }
-
-                table.insert(k, v).unwrap();
-                entries.insert(k, v);
-            }
-            
-            let (mut k, v): (i32, i32) = (rng.gen(), rng.gen());
-            while entries.contains_key(&k) {
-                k = rng.gen();
-            }
-
-            let res = table.insert(k, v);
-            assert!(res.is_err());
-        }
-
-        #[test]
-        fn test_insert_remove() {
-            let mut rng = rand::thread_rng();
-
-            let total_ops = 50_000;
-            let table = Dominus::<i32, i32>::new(100_000, 0.8);
-            let mut entries: HashMap<i32, i32> = HashMap::new();
-
-            for _op in 0..total_ops {
-                let (k, v) = (rng.gen(), rng.gen());
-                table.insert(k, v).unwrap();
-                entries.insert(k, v);
-            }
-
-            let mut entries = Vec::from_iter(entries);
-
-            for _e in 0..entries.len() {
-                let (i, o) = (&mut entries).into_iter().enumerate().choose(&mut rng).unwrap();
-                
-                let (k, v) = *o;
-                let removed = table.remove(&k);
-                assert!(removed);
-                
-                entries.remove(i);
-            }
-        }
-        
-        #[test]
-        fn test_70_30() {
-            let n_threads_approx = thread::available_parallelism().unwrap().get();
-            let total_ops = 500_000;
-
-            let table = Arc::new(Dominus::<i32, i32>::new(1_000_000, 0.8));
-
-            let mut handles = Vec::new();
-
-            for t in 0..=n_threads_approx {
-                let local = Arc::clone(&table);
-
-                let handle = 
-                    thread::spawn(move || {
-                        let mut local_rng = rand::thread_rng();
-                        let mut entries: Vec<(i32, i32)> = Vec::new();
-
-                        for op in 0..(total_ops / n_threads_approx) {
-                            if local_rng.gen::<f64>() < 0.3 {
-                                let (k, v) = (local_rng.gen(), local_rng.gen());
-                                local.insert(k, v).unwrap();
-                                entries.push((k, v));
-                            } 
-                            
-                            else if entries.len() > 0 {
-                                let o = entries.choose(&mut local_rng);
-                                let (k, _) = o.unwrap();
-                                let res = local.get(k);
-
-                                assert!(res.is_some());
-                            }
-                        }
-                    }
-                );
-
-                handles.push(handle);
-            }
-
-            for h in handles.into_iter() {
-                h.join().unwrap();
-            }
-        }
-
-        #[test]
-        fn test_33_contention() {
-            let mut rng = rand::thread_rng();
-            let total_ops = 500_000;
-            let key_range = 1000;
-            
-            let table = Arc::new(Dominus::<i32, i32>::new((key_range as usize) * 2, 0.8));
-            
-            let n_threads_approx = thread::available_parallelism().unwrap().get();
-            let mut handles = Vec::new();
-
-            for _t in 0..=n_threads_approx {
-                let local = Arc::clone(&table);
-
-                let handle = 
-                    thread::spawn(move || {
-                        let mut local_rng = rand::thread_rng();
-
-                        for _op in 0..(total_ops / n_threads_approx) {
-                            let p = local_rng.gen::<f64>();
-
-                            if p < 0.33 {
-                                let (k, v): (i32, i32) = (local_rng.gen_range(0..key_range), local_rng.gen());
-                                local.insert(k, v).unwrap();
-                            } 
-                            
-                            else if p < 0.66 {
-                                let k = local_rng.gen_range(0..key_range);
-                                local.get(&k);
-                            }
-
-                            else {
-                                let k = local_rng.gen_range(0..key_range);
-                                local.remove(&k);
-                            }
-                        }
-                    }
-                );
-
-                handles.push(handle);
-            }
-
-            for h in handles.into_iter() {
-                h.join().unwrap();
-            }
-        }
-
-        use test::Bencher;
-
-        #[bench]
-        fn bench_1M_get(b: &mut Bencher) {
-            let mut rng = rand::thread_rng();
-            let total_ops = 1_000_000;
-            let key_range = 500_000;
-            let table = Dominus::<i32, i32>::new((key_range as usize) * 2, 0.8);
-
-            for _op in 0..total_ops {
-                let (k, v) = (rng.gen_range(0..key_range), rng.gen());
-                table.insert(k, v).unwrap();
-            }
-
-            b.iter(|| {
-                for _op in 0..total_ops {
-                    let k = rng.gen_range(0..key_range);
-                    table.get(&k);
-                }
-            });
-        }
-
-        #[bench]
-        fn bench_1M_get_concurrent(b: &mut Bencher) {
-            let mut rng = rand::thread_rng();
-            let total_ops = 1_000_000;
-            let key_range = 500_000;
-            
-            let table = Arc::new(Dominus::<i32, i32>::new((key_range as usize) * 2, 0.8));
-            
-            let n_threads_approx = thread::available_parallelism().unwrap().get();
-            
-            for _op in 0..total_ops {
-                let (k, v): (i32, i32) = (rng.gen_range(0..key_range), rng.gen());
-                table.insert(k, v).unwrap();
-            }
-            
-            b.iter(|| {
-                let mut handles = Vec::new();
-
-                for _t in 0..=n_threads_approx {
-                    let local = Arc::clone(&table);
-        
-                    let handle = 
-                        thread::spawn(move || {
-                            let mut local_rng = rand::thread_rng();
-        
-                            for _op in 0..(total_ops / n_threads_approx) {
-                                let k = local_rng.gen_range(0..key_range);
-                                let _got = local.get(&k);
-                            }
-                        }
-                    );
-        
-                    handles.push(handle);
-                }
-                
-                for h in handles.into_iter() {
-                    h.join().unwrap();
-                }
-            });
-        }
-
-        #[bench]
-        fn bench_1M_insert_concurrent(b: &mut Bencher) {
-            let total_ops = 1_000_000;
-            let key_range = 500_000;
-            
-            let table = Arc::new(Dominus::<i32, i32>::new((key_range as usize) * 2, 0.8));
-            
-            let n_threads_approx = thread::available_parallelism().unwrap().get();
-            
-            b.iter(|| {
-                let mut handles = Vec::new();
-
-                for _t in 0..=n_threads_approx {
-                    let local = Arc::clone(&table);
-        
-                    let handle = 
-                        thread::spawn(move || {
-                            let mut local_rng = rand::thread_rng();
-        
-                            for _op in 0..(total_ops / n_threads_approx) {
-                                let (k, v): (i32, i32) = (local_rng.gen_range(0..key_range), local_rng.gen());
-                                local.insert(k, v).unwrap();
-                            }
-                        }
-                    );
-        
-                    handles.push(handle);
-                }
-                
-                for h in handles.into_iter() {
-                    h.join().unwrap();
-                }
-            });
-        }
-
-        #[bench]
-        fn bench_1M_insert_mutex(b: &mut Bencher) {
-            use parking_lot::Mutex;
-
-            let total_ops = 100_000;
-            let key_range: i32 = 50_000;
-
-            let n_threads_approx = thread::available_parallelism().unwrap().get();
-            
-            let table = Arc::new(Mutex::new(HashMap::<i32, i32>::with_capacity((key_range as usize) * 2)));
-            
-            b.iter(|| {
-                let mut handles = Vec::new();
-
-                for _t in 0..=n_threads_approx {
-                    let local = Arc::clone(&table);
-        
-                    let handle = 
-                        thread::spawn(move || {
-                            let mut local_rng = rand::thread_rng();
-        
-                            for _op in 0..(total_ops / n_threads_approx) {
-                                let (k, v): (i32, i32) = (local_rng.gen_range(0..key_range), local_rng.gen());
-                                let mut guard = local.lock();
-                                guard.insert(k, v);
-                            }
-                        }
-                    );
-        
-                    handles.push(handle);
-                }
-                
-                for h in handles.into_iter() {
-                    h.join().unwrap();
-                }
-            });
-
+impl<K, V> Entry<K, V> {
+    fn new(hash: u64, key: K, value: V, psl: usize) -> Self {
+        Entry {
+            hash,
+            key,
+            value,
+            psl
         }
     }
 }
