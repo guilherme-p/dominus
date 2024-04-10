@@ -91,7 +91,7 @@ impl<K, V> Dominus<K, V> where
     }
 
     // Return true if key already in table
-    pub fn insert(&self, key: K, value: V) -> Result<bool> {
+    pub fn insert(&self, key: K, value: V) -> Result<Option<V>> {
         let hash = self.get_hash(&key);
 
         if self.load_factor() >= self.max_load_factor {
@@ -100,7 +100,7 @@ impl<K, V> Dominus<K, V> where
 
         let mut entry_idx: usize = usize::try_from(hash)? % self.capacity;
         let mut entry_to_insert = Entry::new(hash, key, value, 0);
-        let mut found = false;
+        let mut found = None;
         
         loop {
             let current_entry_r = self.entries[entry_idx].upgradable_read();
@@ -108,10 +108,11 @@ impl<K, V> Dominus<K, V> where
             match current_entry_r.as_ref() {
                 Some(e) => {
                     if entry_to_insert.key == e.key {
+                        found = Some(e.value);
+
                         let mut current_entry = RwLockUpgradableReadGuard::upgrade(current_entry_r);
                         *current_entry = Some(entry_to_insert);
 
-                        found = true;
                         break;
                     }
 
